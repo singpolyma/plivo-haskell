@@ -1,0 +1,6 @@
+*.[ao]
+*.hi
+*.swp*
+dist/*
+report.html
+dist-ghc/*
