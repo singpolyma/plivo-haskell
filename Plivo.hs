@@ -1,18 +1,20 @@
 module Plivo where
 
-import Data.Maybe
 import Data.String (IsString, fromString)
-import UnexceptionalIO (UnexceptionalIO, fromIO)
-import Control.Error (EitherT, hoistEither, fmapLT, throwT)
+import UnexceptionalIO (fromIO, runUnexceptionalIO)
+import Control.Exception (fromException)
+import Control.Error (EitherT, fmapLT, throwT, runEitherT)
 import Network.URI (URI(..), URIAuth(..))
-import Network.HTTP (simpleHTTP, mkRequest, replaceHeader, rqBody, Request(..), RequestMethod(GET,POST,DELETE), HeaderName(HdrContentType, HdrContentLength, HdrUserAgent), Header(..), Response(..))
-import Network.Stream (ConnError(ErrorMisc))
+import Network.Http.Client (withConnection, establishConnection, sendRequest, buildRequest, http, Method(POST, GET), setAccept, setContentType, Response, receiveResponse, RequestBuilder, inputStreamBody, emptyBody, getStatusCode, setAuthorizationBasic)
+import Blaze.ByteString.Builder (Builder)
+import System.IO.Streams (OutputStream, InputStream, fromLazyByteString)
+import System.IO.Streams.Attoparsec (parseFromStream, ParseException(..))
 import Network.HTTP.Types.QueryLike (QueryLike, toQuery)
 import Network.HTTP.Types.URI (renderQuery)
 import Network.HTTP.Types.Status (Status)
-import Data.Aeson (encode, ToJSON, toJSON, object, (.=))
+import Data.Aeson (encode, ToJSON, toJSON, FromJSON, fromJSON, Result(..), object, (.=), json')
+import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8 -- eww
-import qualified Data.ByteString.Lazy as LZ
 
 s :: (IsString a) => String -> a
 s = fromString
@@ -34,25 +36,12 @@ instance ToJSON MakeCall where
 			s"answer_url" .= show answer_url
 		]
 
-makeCall :: String -> String -> MakeCall -> Request LZ.ByteString
+makeCall :: (FromJSON a) => String -> String -> MakeCall -> IO (Either APIError a)
 makeCall aid atok payload =
-	auth aid atok $
-	post (apiCall ("Account/" ++ aid ++ "/Call/")) payload
-
--- Do HTTP
-
-data APIError = APIParamError | APIAuthError | APINotFoundError | APIOtherError Status | APIConnError ConnError
-	deriving (Show, Eq)
-
-http :: Request LZ.ByteString -> EitherT APIError UnexceptionalIO LZ.ByteString
-http req = do
-	res <- fmapLT APIConnError $ hoistEither =<< fmapLT (ErrorMisc . show) (fromIO $ simpleHTTP req)
-	case rspCode res of
-		(2,_,_) -> return undefined
-		(4,0,0) -> throwT APIParamError
-		(4,0,1) -> throwT APIAuthError
-		(4,0,4) -> throwT APINotFoundError
-		(x,y,z) -> throwT $ APIOtherError $ toEnum (x*100 + y*10 + z)
+	post (apiCall ("Account/" ++ aid ++ "/Call/")) auth payload
+	where
+	-- These should be ASCII
+	auth = setAuthorizationBasic (BS8.pack aid) (BS8.pack atok)
 
 -- Construct URIs
 
@@ -63,49 +52,52 @@ apiCall :: String -> URI
 apiCall ('/':path) = apiCall path
 apiCall path = baseURI { uriPath = (uriPath baseURI) ++ path }
 
--- Authentication
+-- HTTP requests
 
-auth ::
-	String    -- ^ Auth ID
-	-> String -- ^ Auth token
-	-> Request a
-	-> Request a
-auth aid atok req = req {
-		rqURI = (rqURI req) { uriAuthority = Just $ auth {
-			uriUserInfo = aid ++ "@" ++ atok
-		}}
-	}
+post :: (ToJSON a, FromJSON b) => URI -> RequestBuilder () -> a -> IO (Either APIError b)
+post uri req payload = do
+	let req' = do
+		setAccept (BS8.pack "application/json")
+		setContentType (BS8.pack "application/json")
+		req
+	body <- fromLazyByteString (encode payload)
+	oneShotHTTP POST uri req' (inputStreamBody body) responseHandler
+
+get :: (QueryLike a, FromJSON b) => URI -> RequestBuilder () -> a -> IO (Either APIError b)
+get uri req payload = do
+	let req' = do
+		setAccept (BS8.pack "application/json")
+		req
+	oneShotHTTP GET uri' req' emptyBody responseHandler
 	where
-	auth = fromMaybe (URIAuth "" "" "") (uriAuthority $ rqURI req)
+	uri' = uri { uriQuery = BS8.unpack $ renderQuery True (toQuery payload)}
 
--- Create HTTP requests
+data APIError = APIParamError | APIAuthError | APINotFoundError | APIParseError | APIRequestError Status | APIOtherError
+	deriving (Show, Eq)
 
-post :: (ToJSON a) => URI -> a -> Request LZ.ByteString
-post uri payload =
-	Request {
-		rqURI = uri,
-		rqMethod = POST,
-		rqBody = bytes,
-		rqHeaders = [
-			Header HdrUserAgent "Haskell Plivo Module",
-			Header HdrContentType "application/json",
-			Header HdrContentLength (show $ LZ.length bytes)
-		]
-	}
+responseHandler :: (FromJSON a) => Response -> InputStream ByteString -> IO (Either APIError a)
+responseHandler resp i = runUnexceptionalIO $ runEitherT $ do
+	case getStatusCode resp of
+		code | code >= 200 && code < 300 -> return ()
+		400 -> throwT APIParamError
+		401 -> throwT APIAuthError
+		404 -> throwT APINotFoundError
+		code -> throwT $ APIRequestError $ toEnum code
+	v <- fmapLT (handle . fromException) $ fromIO $ parseFromStream json' i
+	case fromJSON v of
+		Success a -> return a
+		Error _ -> throwT APIParseError
 	where
-	bytes = encode payload
+	handle (Just (ParseException _)) = APIParseError
+	handle _ = APIOtherError
 
-get :: (QueryLike a) => URI -> a -> Request LZ.ByteString
-get uri payload =
-	Request {
-		rqURI = uri { uriQuery = BS8.unpack $ renderQuery True (toQuery payload)},
-		rqMethod = GET,
-		rqBody = LZ.empty,
-		rqHeaders = [
-			Header HdrUserAgent "Haskell Plivo Module",
-			Header HdrContentLength "0"
-		]
-	}
-
-delete :: (QueryLike a) => URI -> a -> Request LZ.ByteString
-delete uri payload = (get uri payload) { rqMethod = DELETE }
+oneShotHTTP :: Method -> URI -> RequestBuilder () -> (OutputStream Builder -> IO ()) -> (Response -> InputStream ByteString -> IO b) -> IO b
+oneShotHTTP method uri req body handler = do
+	req' <- buildRequest $ do
+		http method (BS8.pack $ uriPath uri)
+		req
+	withConnection (establishConnection url) $ \conn -> do
+		sendRequest conn req' body
+		receiveResponse conn handler
+	where
+	url = BS8.pack $ show uri -- URI can only have ASCII, so should be safe
