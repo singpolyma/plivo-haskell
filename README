@@ -1,0 +1,2 @@
+This package provides types representing requests to Plivo API endpoints
+and a function that calls the endpoints correctly, given the request.
