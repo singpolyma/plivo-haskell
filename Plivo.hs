@@ -68,7 +68,7 @@ baseURI = URI "https:" (Just $ URIAuth "" "api.plivo.com" "") "/v1/" "" ""
 
 apiCall :: String -> URI
 apiCall ('/':path) = apiCall path
-apiCall path = baseURI { uriPath = (uriPath baseURI) ++ path }
+apiCall path = baseURI { uriPath = uriPath baseURI ++ path }
 
 -- HTTP requests
 
