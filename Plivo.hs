@@ -1,24 +1,33 @@
-module Plivo where
+module Plivo (
+	MakeCall(..),
+	callAPI,
+	APIError(..)
+) where
 
 import Data.String (IsString, fromString)
 import UnexceptionalIO (fromIO, runUnexceptionalIO)
 import Control.Exception (fromException)
 import Control.Error (EitherT, fmapLT, throwT, runEitherT)
 import Network.URI (URI(..), URIAuth(..))
-import Network.Http.Client (withConnection, establishConnection, sendRequest, buildRequest, http, Method(POST, GET), setAccept, setContentType, Response, receiveResponse, RequestBuilder, inputStreamBody, emptyBody, getStatusCode, setAuthorizationBasic)
+import Network.Http.Client (withConnection, establishConnection, sendRequest, buildRequest, http, Method(POST, GET), setAccept, setContentType, Response, receiveResponse, RequestBuilder, inputStreamBody, emptyBody, getStatusCode, setAuthorizationBasic, setContentLength)
 import Blaze.ByteString.Builder (Builder)
 import System.IO.Streams (OutputStream, InputStream, fromLazyByteString)
 import System.IO.Streams.Attoparsec (parseFromStream, ParseException(..))
 import Network.HTTP.Types.QueryLike (QueryLike, toQuery)
 import Network.HTTP.Types.URI (renderQuery)
 import Network.HTTP.Types.Status (Status)
-import Data.Aeson (encode, ToJSON, toJSON, FromJSON, fromJSON, Result(..), object, (.=), json')
+import Data.Aeson (encode, ToJSON, toJSON, FromJSON, fromJSON, Result(..), object, (.=), json', Value)
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Lazy as LZ
 import qualified Data.ByteString.Char8 as BS8 -- eww
 
 s :: (IsString a) => String -> a
 s = fromString
 
+class Endpoint a where
+	endpoint :: String -> RequestBuilder () -> a -> IO (Either APIError Value)
+
+-- | The endpoint to place an outbound call
 data MakeCall = MakeCall {
 		from :: String,
 		to :: String,
@@ -36,9 +45,18 @@ instance ToJSON MakeCall where
 			s"answer_url" .= show answer_url
 		]
 
-makeCall :: (FromJSON a) => String -> String -> MakeCall -> IO (Either APIError a)
-makeCall aid atok payload =
-	post (apiCall ("Account/" ++ aid ++ "/Call/")) auth payload
+instance Endpoint MakeCall where
+	endpoint aid = post (apiCall ("Account/" ++ aid ++ "/Call/"))
+
+-- | Call a Plivo API endpoint
+--
+-- You must wrap your app in a call to 'OpenSSL.withOpenSSL'
+callAPI :: (Endpoint a) =>
+	String    -- ^ AuthID
+	-> String -- ^ AuthToken
+	-> a      -- ^ Endpoint data
+	-> IO (Either APIError Value)
+callAPI aid atok = endpoint aid auth
 	where
 	-- These should be ASCII
 	auth = setAuthorizationBasic (BS8.pack aid) (BS8.pack atok)
@@ -59,9 +77,12 @@ post uri req payload = do
 	let req' = do
 		setAccept (BS8.pack "application/json")
 		setContentType (BS8.pack "application/json")
+		setContentLength (LZ.length body)
 		req
-	body <- fromLazyByteString (encode payload)
-	oneShotHTTP POST uri req' (inputStreamBody body) responseHandler
+	bodyStream <- fromLazyByteString body
+	oneShotHTTP POST uri req' (inputStreamBody bodyStream) responseHandler
+	where
+	body = encode payload
 
 get :: (QueryLike a, FromJSON b) => URI -> RequestBuilder () -> a -> IO (Either APIError b)
 get uri req payload = do
