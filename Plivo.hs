@@ -3,8 +3,8 @@ module Plivo (
 	APIError(..),
 	InclusiveOrdering(..),
 	-- * Enpoints
-	MakeCall(..),
-	makeCall,
+	CreateOutboundCall(..),
+	createOutboundCall,
 	GetCompletedCalls(..),
 	getCompletedCalls
 ) where
@@ -40,7 +40,7 @@ class Endpoint a where
 	endpoint :: String -> RequestBuilder () -> a -> IO (Either APIError Value)
 
 -- | The endpoint to place an outbound call
-data MakeCall = MakeCall {
+data CreateOutboundCall = CreateOutboundCall {
 		from :: String,
 		to :: String,
 		answer_url :: URI,
@@ -63,19 +63,19 @@ data MakeCall = MakeCall {
 	} deriving (Show, Eq)
 
 -- | Helper for constructing simple 'MakeCall'
-makeCall ::
+createOutboundCall ::
 	String    -- ^ from
 	-> String -- ^ to
 	-> URI    -- ^ answer_url
-	-> MakeCall
-makeCall from to answer_url = MakeCall from to answer_url
+	-> CreateOutboundCall
+createOutboundCall from to answer_url = CreateOutboundCall from to answer_url
 	Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
 	Nothing Nothing Nothing Nothing Nothing [] Nothing
 
-instance ToJSON MakeCall where
-	toJSON (MakeCall from to answer_url answer_method ring_url ring_method
-	        hangup_url hangup_method fallback_url fallback_method caller_name
-	        send_digits send_on_preanswer time_limit hangup_on_ring
+instance ToJSON CreateOutboundCall where
+	toJSON (CreateOutboundCall from to answer_url answer_method ring_url
+	        ring_method hangup_url hangup_method fallback_url fallback_method
+	        caller_name send_digits send_on_preanswer time_limit hangup_on_ring
 	        machine_detection machine_detection_time sip_headers ring_timeout
 		) = object $ catMaybes [
 			Just $ s"from" .= from,
@@ -102,7 +102,7 @@ instance ToJSON MakeCall where
 		sipFmt [] = Nothing
 		sipFmt xs = Just $ intercalate "," $ map (\(k,v) -> k ++ "=" ++ v) xs
 
-instance Endpoint MakeCall where
+instance Endpoint CreateOutboundCall where
 	endpoint aid = post (apiCall ("Account/" ++ aid ++ "/Call/"))
 
 data InclusiveOrdering = EQ | LT | LTE | GT | GTE deriving (Show, Eq)
