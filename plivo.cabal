@@ -29,6 +29,8 @@ library
                 blaze-builder,
                 bytestring,
                 aeson,
+                time,
+                old-locale,
                 errors,
                 unexceptionalio
 

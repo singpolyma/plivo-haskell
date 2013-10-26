@@ -1,11 +1,15 @@
 module Plivo (
 	callAPI,
 	APIError(..),
+	InclusiveOrdering(..),
 	-- * Enpoints
 	MakeCall(..),
-	makeCall
+	makeCall,
+	GetCompletedCalls(..),
+	getCompletedCalls
 ) where
 
+import Prelude hiding (Ordering(..))
 import Data.Maybe (catMaybes)
 import Data.List (intercalate)
 import Data.String (IsString, fromString)
@@ -18,11 +22,13 @@ import qualified Network.Http.Client as HttpStreams
 import Blaze.ByteString.Builder (Builder)
 import System.IO.Streams (OutputStream, InputStream, fromLazyByteString)
 import System.IO.Streams.Attoparsec (parseFromStream, ParseException(..))
-import Network.HTTP.Types.QueryLike (QueryLike, toQuery)
+import Network.HTTP.Types.QueryLike (QueryLike, toQuery, toQueryValue)
 import Network.HTTP.Types.URI (renderQuery)
 import Network.HTTP.Types.Method (Method)
 import Network.HTTP.Types.Status (Status)
 import Data.Aeson (encode, ToJSON, toJSON, FromJSON, fromJSON, Result(..), object, (.=), json', Value)
+import Data.Time (UTCTime, formatTime)
+import System.Locale (defaultTimeLocale)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LZ
 import qualified Data.ByteString.Char8 as BS8 -- eww
@@ -98,6 +104,51 @@ instance ToJSON MakeCall where
 
 instance Endpoint MakeCall where
 	endpoint aid = post (apiCall ("Account/" ++ aid ++ "/Call/"))
+
+data InclusiveOrdering = EQ | LT | LTE | GT | GTE deriving (Show, Eq)
+
+orderSuf :: InclusiveOrdering -> String
+orderSuf EQ = ""
+orderSuf LT = "__lt"
+orderSuf LTE = "__lte"
+orderSuf GT = "__gt"
+orderSuf GTE = "__gte"
+
+-- | The endpoint to list completed calls
+data GetCompletedCalls = GetCompletedCalls {
+		subaccount :: Maybe String,
+		call_direction :: Maybe String,
+		from_number :: Maybe String,
+		to_number :: Maybe String,
+		bill_duration :: Maybe (InclusiveOrdering, Int),
+		end_time :: Maybe (InclusiveOrdering, UTCTime),
+		limit :: Maybe Int,
+		offset :: Maybe Int
+	} deriving (Eq, Show)
+
+-- | Helper for constructing simple 'GetCompletedCalls'
+getCompletedCalls :: GetCompletedCalls
+getCompletedCalls = GetCompletedCalls Nothing Nothing Nothing Nothing Nothing
+	Nothing Nothing Nothing
+
+instance QueryLike GetCompletedCalls where
+	toQuery (GetCompletedCalls subaccount call_duration from_number to_number
+	         bill_duration end_time limit offset) = catMaybes [
+			fmap (k "subaccount") subaccount,
+			fmap (k "call_duration") call_duration,
+			fmap (k "from_number") from_number,
+			fmap (k "to_number") to_number,
+			fmap (\(o,d)-> k ("bill_duration"++orderSuf o) (show d)) bill_duration,
+			fmap (\(o,d)-> k ("end_time"++orderSuf o) (utcFmt d)) end_time,
+			fmap (k "limit" . show) limit,
+			fmap (k "offset" . show) offset
+		]
+		where
+		utcFmt = formatTime defaultTimeLocale "%Y-%m-%d %H:%M[:%S[%Q]]"
+		k str = (,) (fromString str) . toQueryValue
+
+instance Endpoint GetCompletedCalls where
+	endpoint aid = get (apiCall ("Account/" ++ aid ++ "/Call/"))
 
 -- | Call a Plivo API endpoint
 --
