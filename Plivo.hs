@@ -2,20 +2,25 @@ module Plivo (
 	callAPI,
 	APIError(..),
 	-- * Enpoints
-	MakeCall(..)
+	MakeCall(..),
+	makeCall
 ) where
 
+import Data.Maybe (catMaybes)
+import Data.List (intercalate)
 import Data.String (IsString, fromString)
 import UnexceptionalIO (fromIO, runUnexceptionalIO)
 import Control.Exception (fromException)
 import Control.Error (EitherT, fmapLT, throwT, runEitherT)
 import Network.URI (URI(..), URIAuth(..))
-import Network.Http.Client (withConnection, establishConnection, sendRequest, buildRequest, http, Method(POST, GET), setAccept, setContentType, Response, receiveResponse, RequestBuilder, inputStreamBody, emptyBody, getStatusCode, setAuthorizationBasic, setContentLength)
+import Network.Http.Client (withConnection, establishConnection, sendRequest, buildRequest, http, setAccept, setContentType, Response, receiveResponse, RequestBuilder, inputStreamBody, emptyBody, getStatusCode, setAuthorizationBasic, setContentLength)
+import qualified Network.Http.Client as HttpStreams
 import Blaze.ByteString.Builder (Builder)
 import System.IO.Streams (OutputStream, InputStream, fromLazyByteString)
 import System.IO.Streams.Attoparsec (parseFromStream, ParseException(..))
 import Network.HTTP.Types.QueryLike (QueryLike, toQuery)
 import Network.HTTP.Types.URI (renderQuery)
+import Network.HTTP.Types.Method (Method)
 import Network.HTTP.Types.Status (Status)
 import Data.Aeson (encode, ToJSON, toJSON, FromJSON, fromJSON, Result(..), object, (.=), json', Value)
 import Data.ByteString (ByteString)
@@ -32,19 +37,64 @@ class Endpoint a where
 data MakeCall = MakeCall {
 		from :: String,
 		to :: String,
-		answer_url :: URI
+		answer_url :: URI,
+		answer_method :: Maybe Method,
+		ring_url :: Maybe URI,
+		ring_method :: Maybe Method,
+		hangup_url :: Maybe URI,
+		hangup_method :: Maybe Method,
+		fallback_url :: Maybe URI,
+		fallback_method :: Maybe Method,
+		caller_name :: Maybe String,
+		send_digits :: Maybe String,
+		send_on_preanswer :: Maybe Bool,
+		time_limit :: Maybe Int,
+		hangup_on_ring :: Maybe Int,
+		machine_detection :: Maybe String,
+		machine_detection_time :: Maybe Int,
+		sip_headers :: [(String,String)],
+		ring_timeout :: Maybe Int
 	} deriving (Show, Eq)
 
+-- | Helper for constructing simple 'MakeCall'
+makeCall ::
+	String    -- ^ from
+	-> String -- ^ to
+	-> URI    -- ^ answer_url
+	-> MakeCall
+makeCall from to answer_url = MakeCall from to answer_url
+	Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+	Nothing Nothing Nothing Nothing Nothing [] Nothing
+
 instance ToJSON MakeCall where
-	toJSON (MakeCall {
-			from = from,
-			to = to,
-			answer_url = answer_url
-		}) = object [
-			s"from" .= from,
-			s"to" .= to,
-			s"answer_url" .= show answer_url
+	toJSON (MakeCall from to answer_url answer_method ring_url ring_method
+	        hangup_url hangup_method fallback_url fallback_method caller_name
+	        send_digits send_on_preanswer time_limit hangup_on_ring
+	        machine_detection machine_detection_time sip_headers ring_timeout
+		) = object $ catMaybes [
+			Just $ s"from" .= from,
+			Just $ s"to" .= to,
+			Just $ s"answer_url" .= show answer_url,
+			fmap (s"answer_method" .=) answer_method,
+			fmap ((s"ring_url" .=) . show) ring_url,
+			fmap (s"ring_method" .=) ring_method,
+			fmap ((s"hangup_url" .=) . show) hangup_url,
+			fmap (s"hangup_method" .=) hangup_method,
+			fmap ((s"fallback_url" .=) . show) fallback_url,
+			fmap (s"fallback_method" .=) fallback_method,
+			fmap (s"caller_name" .=) caller_name,
+			fmap (s"send_digits" .=) send_digits,
+			fmap (s"send_on_preanswer" .=) send_on_preanswer,
+			fmap (s"time_limit" .=) time_limit,
+			fmap (s"hangup_on_ring" .=) hangup_on_ring,
+			fmap (s"machine_detection" .=) machine_detection,
+			fmap (s"machine_detection_time" .=) machine_detection_time,
+			fmap (s"sip_headers" .=) (sipFmt sip_headers),
+			fmap (s"ring_timeout" .=) ring_timeout
 		]
+		where
+		sipFmt [] = Nothing
+		sipFmt xs = Just $ intercalate "," $ map (\(k,v) -> k ++ "=" ++ v) xs
 
 instance Endpoint MakeCall where
 	endpoint aid = post (apiCall ("Account/" ++ aid ++ "/Call/"))
@@ -81,7 +131,7 @@ post uri req payload = do
 		setContentLength (LZ.length body)
 		req
 	bodyStream <- fromLazyByteString body
-	oneShotHTTP POST uri req' (inputStreamBody bodyStream) responseHandler
+	oneShotHTTP HttpStreams.POST uri req' (inputStreamBody bodyStream) responseHandler
 	where
 	body = encode payload
 
@@ -90,7 +140,7 @@ get uri req payload = do
 	let req' = do
 		setAccept (BS8.pack "application/json")
 		req
-	oneShotHTTP GET uri' req' emptyBody responseHandler
+	oneShotHTTP HttpStreams.GET uri' req' emptyBody responseHandler
 	where
 	uri' = uri { uriQuery = BS8.unpack $ renderQuery True (toQuery payload)}
 
@@ -113,7 +163,7 @@ responseHandler resp i = runUnexceptionalIO $ runEitherT $ do
 	handle (Just (ParseException _)) = APIParseError
 	handle _ = APIOtherError
 
-oneShotHTTP :: Method -> URI -> RequestBuilder () -> (OutputStream Builder -> IO ()) -> (Response -> InputStream ByteString -> IO b) -> IO b
+oneShotHTTP :: HttpStreams.Method -> URI -> RequestBuilder () -> (OutputStream Builder -> IO ()) -> (Response -> InputStream ByteString -> IO b) -> IO b
 oneShotHTTP method uri req body handler = do
 	req' <- buildRequest $ do
 		http method (BS8.pack $ uriPath uri)
