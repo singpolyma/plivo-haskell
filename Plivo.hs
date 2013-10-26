@@ -1,7 +1,8 @@
 module Plivo (
-	MakeCall(..),
 	callAPI,
-	APIError(..)
+	APIError(..),
+	-- * Enpoints
+	MakeCall(..)
 ) where
 
 import Data.String (IsString, fromString)
