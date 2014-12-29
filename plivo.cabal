@@ -1,5 +1,5 @@
 name:            plivo
-version:         0.1.0.0
+version:         0.2.0.0
 cabal-version:   >=1.8
 license:         OtherLicense
 license-file:    COPYING
@@ -22,7 +22,7 @@ library
 
         build-depends:
                 base == 4.*,
-                network,
+                network-uri,
                 http-types,
                 http-streams,
                 io-streams,
