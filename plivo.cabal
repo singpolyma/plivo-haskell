@@ -31,7 +31,7 @@ library
                 aeson,
                 time,
                 old-locale,
-                errors,
+                errors < 2.0,
                 unexceptionalio
 
 source-repository head
